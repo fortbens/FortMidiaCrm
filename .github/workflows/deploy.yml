@@ -1,0 +1,188 @@
+name: Deploy Grupo FortMídia & Portal FortNews (cPanel HomeHost)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      target_site:
+        description: "Qual domínio publicar no cPanel HomeHost?"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - fortmidia
+          - fortnews
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Validate Lint & Build Unified dist/
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund --legacy-peer-deps
+
+      - name: Type-check and Lint
+        run: npm run lint
+
+      - name: Build unified multi-domain SPA bundle (dist/)
+        run: npm run build
+        env:
+          VITE_APP_ENV: production
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || '/api' }}
+          VITE_BASE_PATH: "./"
+          VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
+
+      - name: Upload dist/ artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fortmidia-fortnews-dist
+          path: |
+            dist/
+            dist/.htaccess
+          include-hidden-files: true
+          retention-days: 3
+
+  publish-cpanel-branch:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Update cpanel-deploy branch (Prebuilt dist/ for cPanel Git)
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download built dist/ artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fortmidia-fortnews-dist
+          path: ./prebuilt-dist
+
+      - name: Push lightweight prebuilt bundle to cpanel-deploy branch
+        run: |
+          mkdir -p /tmp/cpanel-stage/dist
+          cp -af ./prebuilt-dist/. /tmp/cpanel-stage/dist/
+          cp -af ./.cpanel.yml /tmp/cpanel-stage/.cpanel.yml
+          test -f /tmp/cpanel-stage/.cpanel.yml
+          test -f /tmp/cpanel-stage/dist/index.html
+          ls -la /tmp/cpanel-stage /tmp/cpanel-stage/dist
+          cd /tmp/cpanel-stage
+          git init -b cpanel-deploy
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "deploy: prebuilt dist/ + .cpanel.yml for HomeHost (${{ github.sha }})"
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+          git push --force origin cpanel-deploy
+
+  deploy-fortmidia:
+    needs: build
+    if: (github.event_name == 'push' || github.event.inputs.target_site == 'all' || github.event.inputs.target_site == 'fortmidia') && vars.ENABLE_CPANEL_FORTMIDIA != 'false'
+    runs-on: ubuntu-latest
+    name: Publish fortmidia.com.br (cPanel FTPS)
+
+    steps:
+      - name: Download built dist/ artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fortmidia-fortnews-dist
+          path: ./dist
+
+      - name: Check cPanel FortMídia FTP secrets
+        id: check-ftp
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          if [ -n "$FTP_SERVER" ] && [ -n "$FTP_USERNAME" ] && [ -n "$FTP_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Secrets FTP_SERVER/FTP_USERNAME/FTP_PASSWORD não configurados. Build validado; pulando envio FTPS."
+          fi
+
+      - name: Deploy dist/ to fortmidia.com.br via FTPS
+        if: steps.check-ftp.outputs.enabled == 'true'
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./dist/
+          server-dir: ${{ secrets.FTP_DIR_FORTMIDIA || '/fortmidia.com.br/' }}
+          protocol: ftps
+          dangerous-clean-slate: false
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/.well-known/**
+            **/node_modules/**
+            **/api/**
+            **/cgi-bin/**
+
+  deploy-fortnews:
+    needs: build
+    if: (github.event_name == 'push' || github.event.inputs.target_site == 'all' || github.event.inputs.target_site == 'fortnews') && vars.ENABLE_CPANEL_FORTNEWS != 'false'
+    runs-on: ubuntu-latest
+    name: Publish fortnews.com.br (cPanel FTPS)
+
+    steps:
+      - name: Download built dist/ artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fortmidia-fortnews-dist
+          path: ./dist
+
+      - name: Check cPanel FortNews FTP secrets
+        id: check-ftp-fortnews
+        env:
+          FTP_SERVER: ${{ secrets.FTP_SERVER_FORTNEWS || secrets.FTP_SERVER }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME_FORTNEWS || secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD_FORTNEWS || secrets.FTP_PASSWORD }}
+        run: |
+          if [ -n "$FTP_SERVER" ] && [ -n "$FTP_USERNAME" ] && [ -n "$FTP_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Secrets FTP do FortNews não configurados. Build validado; pulando envio FTPS."
+          fi
+
+      - name: Deploy dist/ to fortnews.com.br via FTPS
+        if: steps.check-ftp-fortnews.outputs.enabled == 'true'
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER_FORTNEWS || secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME_FORTNEWS || secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD_FORTNEWS || secrets.FTP_PASSWORD }}
+          local-dir: ./dist/
+          server-dir: ${{ secrets.FTP_DIR_FORTNEWS || '/fortnews.com.br/' }}
+          protocol: ftps
+          dangerous-clean-slate: false
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/.well-known/**
+            **/node_modules/**
+            **/api/**
+            **/cgi-bin/**

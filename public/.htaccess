@@ -1,0 +1,50 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Enforce HTTPS safely behind cPanel / HomeHost / Cloudflare reverse proxies
+  RewriteCond %{HTTPS} off
+  RewriteCond %{HTTP:X-Forwarded-Proto} !https
+  RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+  # Never rewrite backend PHP REST API routes under /api/
+  RewriteCond %{REQUEST_URI} ^/api(/|$) [NC]
+  RewriteRule ^ - [L]
+
+  # Serve existing static files and directories directly (assets, manifest, videos, php)
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Fallback all SPA routes (/admin, /crm, /sistema, /fortnews, /cliente, /apresentacao) to index.html
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Block direct HTTP access to hidden dotfiles and environment/SQL backups
+<FilesMatch "(^\.env|\.sql$|composer\.(json|lock)$)">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
+# Browser caching for static assets on Apache / cPanel
+<IfModule mod_expires.c>
+  ExpiresActive On
+  ExpiresByType image/jpeg "access plus 1 year"
+  ExpiresByType image/png "access plus 1 year"
+  ExpiresByType image/webp "access plus 1 year"
+  ExpiresByType image/svg+xml "access plus 1 year"
+  ExpiresByType video/mp4 "access plus 1 year"
+  ExpiresByType text/css "access plus 1 month"
+  ExpiresByType application/javascript "access plus 1 month"
+</IfModule>
+
+# Security headers
+<IfModule mod_headers.c>
+  Header set X-Content-Type-Options "nosniff"
+  Header set X-Frame-Options "SAMEORIGIN"
+  Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
