@@ -2,13 +2,48 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { defineConfig } from 'vite';
+
+const ROOT_DIR =
+  typeof import.meta.dirname === 'string'
+    ? import.meta.dirname
+    : path.dirname(fileURLToPath(import.meta.url));
+
+function collectReferencedAistudioAssets(rootDir: string): Set<string> {
+  const referenced = new Set<string>();
+  const pattern = /assets\/aistudio\/([^"'`\s)?#]+)/g;
+  const scanFile = (filePath: string) => {
+    if (!fs.existsSync(filePath)) return;
+    const content = fs.readFileSync(filePath, 'utf8');
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content)) !== null) {
+      referenced.add(decodeURIComponent(match[1]));
+    }
+  };
+  const walkDir = (dir: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walkDir(full);
+      } else if (/\.(ts|tsx|js|jsx|json|css|html)$/i.test(entry.name)) {
+        scanFile(full);
+      }
+    }
+  };
+
+  walkDir(path.join(rootDir, 'src'));
+  scanFile(path.join(rootDir, 'index.html'));
+  scanFile(path.join(rootDir, 'public', 'manifest.json'));
+  return referenced;
+}
 
 export default defineConfig(({ mode }) => {
   let outDir = 'dist';
-  // Relative './' base ensures the single build works cleanly on domain roots
-  // (fortmidia.com.br, fortnews.com.br) and cPanel subfolders. Override via VITE_BASE_PATH='/' if needed.
-  const basePath = process.env.VITE_BASE_PATH || './';
+  // Root '/' base ensures assets load correctly on any SPA route (/admin, /crm, /fortnews)
+  // on domain roots (fortmidia.com.br, fortnews.com.br). Override via VITE_BASE_PATH if deploying to a subfolder.
+  const basePath = process.env.VITE_BASE_PATH || '/';
 
   return {
     base: basePath,
@@ -16,7 +51,7 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
       {
-        name: 'copy-unbundled-src-assets',
+        name: 'copy-and-prune-dist-assets',
         apply: 'build',
         configResolved(resolved) {
           outDir = resolved.build.outDir || 'dist';
@@ -25,11 +60,25 @@ export default defineConfig(({ mode }) => {
           if (error) {
             return;
           }
-          const distDir = path.resolve(__dirname, outDir);
-          const srcAssets = path.resolve(__dirname, 'src/assets');
+          const distDir = path.resolve(ROOT_DIR, outDir);
+          const srcAssets = path.resolve(ROOT_DIR, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
             fs.cpSync(srcAssets, distAssets, { recursive: true, force: true });
+          }
+
+          // Remove unreferenced reference attachments (PDFs/MP4s) from dist/assets/aistudio
+          // so FTPS/SSH/ZIP deployments stay lean without deleting originals from public/.
+          const distAistudio = path.join(distDir, 'assets', 'aistudio');
+          if (fs.existsSync(distAistudio)) {
+            const referenced = collectReferencedAistudioAssets(ROOT_DIR);
+            if (referenced.size > 0) {
+              for (const entry of fs.readdirSync(distAistudio, { withFileTypes: true })) {
+                if (entry.isFile() && !referenced.has(entry.name)) {
+                  fs.unlinkSync(path.join(distAistudio, entry.name));
+                }
+              }
+            }
           }
         },
       },
@@ -50,7 +99,7 @@ export default defineConfig(({ mode }) => {
     },
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(ROOT_DIR, '.'),
       },
     },
     build: {

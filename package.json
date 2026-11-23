@@ -7,10 +7,11 @@
     "dev": "tsx server.ts",
     "start": "node server.ts",
     "build": "vite build",
+    "build:zip": "node scripts/package-cpanel-zip.mjs",
     "build:fortmidia": "VITE_APP_TARGET=fortmidia vite build --outDir dist-fortmidia",
     "build:fortnews": "VITE_APP_TARGET=fortnews vite build --outDir dist-fortnews",
     "preview": "vite preview",
-    "clean": "rm -rf dist dist-fortmidia dist-fortnews server.js",
+    "clean": "rm -rf dist dist-fortmidia dist-fortnews release server.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
